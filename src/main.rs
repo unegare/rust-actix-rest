@@ -1,12 +1,12 @@
-use std::path::PathBuf;
+use std::{path::PathBuf, fs::DirBuilder};
 
-use actix_multipart::{Field, Multipart, MultipartError};
+use actix_multipart::{/*Field,*/ Multipart, MultipartError};
 use actix_web::{
-    web::{post, resource, Data, Json},
-    App, FromRequest, HttpResponse, HttpServer, Result, error, middleware, Error
+    web::{post, resource, Data, /*Json*/},
+    App, FromRequest, HttpResponse, HttpServer, Result, error, /*middleware, Error*/
 };
 
-use form_data::{handle_multipart, /*Field,*/ FilenameGenerator, Form};
+use form_data::{/*handle_multipart, *//*Field,*/ FilenameGenerator, Form, Error as FormDataError};
 use futures::Future;
 use futures::future::{err, Either};
 use actix_http;
@@ -15,7 +15,7 @@ use rand::Rng;
 
 use serde::{Deserialize, Serialize};
 
-use std::io::{BufWriter, Write, Read};
+use std::io::{BufWriter, Write/*, Read*/};
 
 //use tokio_io::AsyncWrite;
 
@@ -25,8 +25,6 @@ use image::{ImageFormat, guess_format};
 
 use futures::stream::Stream;
 
-struct Gen;
-
 //std::arc::Arc<u64> counter;
 //std::sync::atomic::AtomicU64
 
@@ -35,6 +33,8 @@ struct Gen;
 //    println!("type_name == \"{}\"", unsafe {std::intrinsics::type_name::<T>()});
 //}
 
+
+const UPLOADDIR: &str = "uploaded";
 
 #[inline]
 fn get_random_name() -> PathBuf {
@@ -46,10 +46,45 @@ fn get_random_name() -> PathBuf {
     }
     let name: String = bs58::encode(safe_transmute::to_bytes::transmute_to_bytes(&vname)).into_string();
     let mut p = PathBuf::new();
-    p.push(format!("uploaded/{}", name));
+    p.push(UPLOADDIR);
+    p.push(name);
     p
 }
 
+#[cfg(unix)]
+fn build_dir(dir: &PathBuf) -> Result<(), FormDataError> {
+    use std::os::unix::fs::DirBuilderExt;
+
+    DirBuilder::new()
+        .recursive(true)
+        .mode(0o755)
+        .create(dir)
+        .map_err(|_| FormDataError::MkDir)
+}
+
+#[cfg(not(unix))]
+fn build_dir(stored_dir: &PathBuf) -> Result<(), FormDataError> {
+    DirBuilder::new()
+        .recursive(true)
+        .create(stored_dir)
+        .map_err(|_| FormDataError::MkDir)
+}
+
+struct Gen;
+
+impl Gen {
+    fn new() -> Gen {
+        let mut p = PathBuf::new();
+        p.push(UPLOADDIR);
+        match build_dir(&p) {
+            Ok(()) => {},
+            Err(_e) => {
+                panic!("ERROR: cannot create $UPLOADDIR");
+            }
+        }
+        Gen
+    }
+}
 
 impl FilenameGenerator for Gen {
     fn next_filename(&self, _m: &mime::Mime) -> Option<PathBuf> {
@@ -64,26 +99,25 @@ struct ResKeys {
     keys: Vec<String>
 }
 
-fn upload_multipart((mp, state): (Multipart, Data<Form>)) -> Box<dyn Future<Item = HttpResponse, Error = actix_http::error::Error>> { //Error = form_data::Error>> {
-    println!("state: {:?}", state);
+fn upload_multipart((mp, _state): (Multipart, Data<Form>)) -> Box<dyn Future<Item = HttpResponse, Error = actix_http::error::Error>> {
+//    println!("state: {:?}", state);
     Box::new( 
         mp
             .map_err(error::ErrorInternalServerError)
             .map(move |field| {
-                if 1 == 0 {return Either::A(err(error::ErrorInternalServerError(""))).into_stream()}
-                Either::B(field.fold(("".to_string(), Vec::new()), |(_noname, mut acc): (String, Vec<u8>), b: bytes::Bytes| {
-                    println!("after fold ... bytes.len() == {} | da.len() == {}", b.len(), acc.len());
+                if false {return Either::A(err(error::ErrorInternalServerError(""))).into_stream()}
+                Either::B(field.fold(Vec::new(), |mut acc: Vec<u8>, b: bytes::Bytes| {
+//                    println!("after fold ... bytes.len() == {} | da.len() == {}", b.len(), acc.len());
                     acc.append(&mut b.to_vec());
                     /*actix_web::web::block*/futures::lazy(move || {
-                        Ok(("ok".to_string(), acc))
+                        Ok(acc)
                     })
-                        .map_err(|e: error::BlockingError<MultipartError>| {
-                            eprintln!("map_err: {:?}", e);
+                        .map_err(|_e: error::BlockingError<std::io::Error>| {
                             MultipartError::Incomplete
                         })
                 })
-                    .map(|(_s, v)| {
-                        println!("v.len() == {}", v.len());
+                    .map(|v| {
+//                        println!("v.len() == {}", v.len());
                         actix_web::web::block(move || {
                             let fmt = match image::guess_format(&v) {
                                 Ok(fmt) => fmt,
@@ -106,7 +140,8 @@ fn upload_multipart((mp, state): (Multipart, Data<Form>)) -> Box<dyn Future<Item
 
                                 _ => {
                                     eprintln!("match fmt: unsupported format");
-                                    return Err(MultipartError::Incomplete);                                }
+                                    return Err(MultipartError::Incomplete);
+                                }
                             };
                             let mut pb = get_random_name();
                             match image::load_from_memory(&v) {
@@ -121,13 +156,28 @@ fn upload_multipart((mp, state): (Multipart, Data<Form>)) -> Box<dyn Future<Item
                                         }
                                     };
                                     pb.set_extension(ext);
-                                    match img.save(&pb) {
-                                        Ok(_) => {},
+                                    let mut fimg = match std::fs::File::create(&pb) {
+                                        Ok(f) => f,
                                         Err(e) => {
-                                            eprintln!("upload_multipart: img.save : {:?}", e);
+                                            eprintln!("upload_multipart: fimg create : {:?}", e);
                                             return Err(MultipartError::Incomplete);
                                         }
-                                    }
+                                    };
+//                                    let bufw = std::io::BufWriter::new(fimg);
+                                    match fimg.write_all(&v) {
+                                        Ok(_) => {},
+                                        Err(e) => {
+                                            eprintln!("upload_multipart: fimg.write_all : {:?}", e);
+                                            return Err(MultipartError::Incomplete);
+                                        }
+                                    };
+//                                    match img.save(&pb) {
+//                                        Ok(_) => {},
+//                                        Err(e) => {
+//                                            eprintln!("upload_multipart: img.save : {:?}", e);
+//                                            return Err(MultipartError::Incomplete);
+//                                        }
+//                                    };
                                 },
                                 Err(e) => {
                                     eprintln!("upload_multipart: image::load_from_memory : {:?}", e);
@@ -137,7 +187,7 @@ fn upload_multipart((mp, state): (Multipart, Data<Form>)) -> Box<dyn Future<Item
                             Ok(pb.to_str().unwrap().to_string())
                         })
                             .map(|s| s)
-                            .map_err(|e: error::BlockingError<MultipartError>| {MultipartError::Incomplete})
+                            .map_err(|_e: error::BlockingError<MultipartError>| {MultipartError::Incomplete})
                     })
                     .map_err(|e| error::ErrorInternalServerError(e))
                 )
@@ -155,11 +205,11 @@ fn upload_multipart((mp, state): (Multipart, Data<Form>)) -> Box<dyn Future<Item
                 error::ErrorInternalServerError(e)
             })
             .and_then(|v| {
-                println!("v == {:?}", v);
+//                println!("v == {:?}", v);
                 HttpResponse::Created().json(ResKeys{keys: v})
             })
             .map_err(|e| {
-                println!("failed3: {:?}", e);
+                eprintln!("failed3: {:?}", e);
                 error::ErrorInternalServerError(e)
             })
     )
@@ -281,7 +331,7 @@ fn upload_json(json: actix_web::web::Json<MyJson>) -> Box<dyn Future<Item = Http
 fn main() -> Result<(), failure::Error> {
     let form = form_data::Form::new()
         .field("files", form_data::Field::array(
-            form_data::Field::file(Gen)
+            form_data::Field::file(Gen::new())
 //            Field::map()
 //                .field("key", Field::text())
 //                .field("file", Field::file(Gen))
@@ -295,7 +345,7 @@ fn main() -> Result<(), failure::Error> {
             .service(resource("/upload")
                 .guard(actix_web::guard::fn_guard(|req| {
                     if let Some(Ok(content_type)) = req.headers().get("content-type").map(|h| h.to_str()) {
-                        println!("content_type == {:?}", content_type);
+//                        println!("content_type == {:?}", content_type);
                         content_type.len() >= 19 && content_type.as_bytes()[..19].to_vec() == b"multipart/form-data"
                     } else {
                         false
@@ -318,7 +368,7 @@ fn main() -> Result<(), failure::Error> {
                 )
             )
     })
-    .bind("127.0.0.1:8080")?
+    .bind("0.0.0.0:8080")?
     .run()?;
 
     println!();
