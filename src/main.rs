@@ -402,7 +402,8 @@ fn main() -> Result<(), failure::Error> {
                     }
                 }))
 //                .data(ResKeys{keys: Vec::new()})
-                .data(form.clone())
+//                .data(form.clone())
+                .data(Form::new())
                 .route(post()
                     .to(upload_multipart)
                 )
@@ -416,8 +417,6 @@ fn main() -> Result<(), failure::Error> {
                     .to(upload_json)
                 )
             )
-//            .service(resource("/upload_from_link)")
-//                .guard(actix)
     })
     .bind("0.0.0.0:8080")?
     .run()?;
