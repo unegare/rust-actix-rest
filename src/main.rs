@@ -1,21 +1,23 @@
-use std::{path::PathBuf, fs::DirBuilder};
+use std::{path::PathBuf, fs::DirBuilder, /*net,*/ io::Write};
 
 use actix_multipart::{/*Field,*/ Multipart, MultipartError};
 use actix_web::{
     web::{post, resource, Data, /*Json*/},
-    App, FromRequest, HttpResponse, HttpServer, Result, error, /*middleware, Error*/
+    client::Client, App, FromRequest, HttpResponse, HttpServer, Result, error, /*middleware, Error*/
 };
 
 use form_data::{/*handle_multipart, *//*Field,*/ FilenameGenerator, Form, Error as FormDataError};
 use futures::Future;
-use futures::future::{err, Either};
+use futures::{
+    future::{err, Either},
+    stream::Stream
+};
 use actix_http;
+//use actix_utils::stream::IntoStream;
 
 use rand::Rng;
 
 use serde::{Deserialize, Serialize};
-
-use std::io::{/*BufWriter,*/ Write/*, Read*/};
 
 //use tokio_io::AsyncWrite;
 
@@ -23,7 +25,8 @@ use failure::Fail;
 
 use image::{ImageFormat/*, guess_format*/};
 
-use futures::stream::Stream;
+//use trust_dns_resolver::{Resolver, config as tdnsrconfig};
+
 
 //#![feature(core_intrinsics)]
 //fn print_type_name<T> (t: T) {
@@ -99,7 +102,13 @@ enum PIError {
     #[fail(display = "Internal Server IO Error")]
     IO(String),
     #[fail(display = "Decoding Image Error")]
-    Loading(String)
+    Loading(String),
+    #[fail(display = "Url Parse Error")]
+    UrlParse(String),
+//    #[fail(display = "Unsuitable Content Type Error")]
+//    BadContentType(String),
+    #[fail(display = "Bad Request ERROR")]
+    BadRequest(String)
 }
 
 fn process_image (data: &[u8]) -> Result<String,PIError/*std::io::Error*/> {
@@ -163,6 +172,36 @@ fn process_image (data: &[u8]) -> Result<String,PIError/*std::io::Error*/> {
     Ok(pb.to_str().unwrap().to_string())
 }
 
+fn process_url (url: String) -> Result<String, PIError>{
+    let res = std::thread::spawn(move || { //wrapped in a thread because of a bug in actix .... actix issue #1007
+        actix_rt::System::new("fut").block_on(futures::lazy(|| {
+            let client = Client::new();
+            client.get(url)
+                .send()
+                .map_err(|e| {
+                    eprintln!("client err, {:?}", e);
+                    error::PayloadError::Overflow //just a error
+                })
+                .and_then(|mut res| {
+//                    println!("Response: {:?}", res);
+                    res.body()
+                })
+                .map_err(|e| PIError::BadRequest(e.to_string()))
+                .and_then(|body| {
+                    process_image(&body.to_vec())
+                })
+            })
+        )
+    }).join();
+    match res {
+        Ok(s) => s,
+        Err(e) => {
+            eprintln!("err: {:?}", e);
+            Err(PIError::IO("".to_string()))
+        }
+    }
+}
+
 #[derive(Serialize)]
 struct ResKeys {
     keys: Vec<String>
@@ -174,6 +213,15 @@ fn upload_multipart((mp, _state): (Multipart, Data<Form>)) -> Box<dyn Future<Ite
         mp
             .map_err(error::ErrorBadRequest)
             .map(move |field: actix_multipart::Field| {
+//                println!("cd : {:?}", field.content_disposition());
+                let fieldname = match field.content_disposition() {
+                    Some(cd) => match cd.get_name() {
+                        Some(name) => String::from(name),
+                        None => "".to_string()
+                    },
+                    None => "".to_string()
+                };
+//                println!("fieldname == {}", fieldname);
                 if false {return Either::A(err(error::ErrorInternalServerError(""))).into_stream()}
                 Either::B(field.fold(Vec::new(), |mut acc: Vec<u8>, b: bytes::Bytes| {
                     acc.append(&mut b.to_vec());
@@ -185,7 +233,48 @@ fn upload_multipart((mp, _state): (Multipart, Data<Form>)) -> Box<dyn Future<Ite
                         })
                 })
                     .map(|v| {
-                        actix_web::web::block(move || process_image(&v))
+                        actix_web::web::block(move || {
+                                if fieldname == "url" || fieldname == "url[]" {
+//                                    println!("url : {:?}", v);
+                                    let url = match String::from_utf8(v) {
+                                        Ok(s) => s,
+                                        Err(e) => {
+//                                            eprintln!("String::from_utf8::Err: {:?}", e);
+                                            return Err(PIError::UrlParse(format!("{:?}", e)))
+                                        }
+                                    };
+//                                    println!("url: {}", url);
+                                    let res = std::thread::spawn(move || { //wrapped in a thread because of a bug in actix .... actix issue #1007
+                                        actix_rt::System::new("fut").block_on(futures::lazy(|| {
+                                            let client = Client::new();
+                                            client.get(url)
+                                                .send()
+                                                .map_err(|e| {
+                                                    eprintln!("client err, {:?}", e);
+                                                    error::PayloadError::Overflow //just a error
+                                                })
+                                                .and_then(|mut res| {
+//                                                    println!("Response: {:?}", res);
+                                                    res.body()
+                                                })
+                                                .map_err(|e| PIError::BadRequest(e.to_string()))
+                                                .and_then(|body| {
+                                                    process_image(&body.to_vec())
+                                                })
+                                            })
+                                        )
+                                    }).join();
+                                    match res {
+                                        Ok(s) => {return s;},
+                                        Err(e) => {
+                                            eprintln!("err: {:?}", e);
+                                            return Err(PIError::IO("".to_string()));
+                                        }
+                                    };
+                                } else {
+                                    process_image(&v)
+                                }
+                            })
                             .map_err(|e: error::BlockingError<PIError>| {
                                 match e {
                                     error::BlockingError::Error(e) => {
@@ -194,9 +283,12 @@ fn upload_multipart((mp, _state): (Multipart, Data<Form>)) -> Box<dyn Future<Ite
                                             PIError::UnsupportedFormat(_) => error::ErrorBadRequest(e),
                                             PIError::Loading(_) => error::ErrorBadRequest(e),
                                             PIError::IO(_) => error::ErrorInternalServerError(e),
+                                            PIError::UrlParse(_) => error::ErrorBadRequest(e),
+//                                            PIError::BadContentType(_) => error::ErrorBadRequest(e),
+                                            PIError::BadRequest(_) => error::ErrorInternalServerError(e)
                                         }
                                     }
-                                    error::BlockingError::Canceled => error::ErrorInternalServerError("")
+                                    error::BlockingError::Canceled => error::ErrorInternalServerError("Canceled")
                                 }
                             })
                     })
@@ -230,14 +322,15 @@ struct FileDescriptor {
 
 #[derive(Deserialize, Debug)]
 struct MyJson {
-    arr: Vec<FileDescriptor>
+    binarr: Vec<FileDescriptor>,
+    urls: Vec<String>
 }
 
 fn upload_json(json: actix_web::web::Json<MyJson>) -> Box<dyn Future<Item = HttpResponse, Error = actix_http::error::Error>> {
 //    println!("upload_json inside");
 //    println!("{:?}", json.0);
     let mut files_data: Vec<Vec<u8>> = Vec::new();
-    for fd in json.0.arr {
+    for fd in json.0.binarr {
         match base64::decode(&fd.data) {
             Ok(data) => files_data.push(data),
             Err(e) => {
@@ -246,11 +339,15 @@ fn upload_json(json: actix_web::web::Json<MyJson>) -> Box<dyn Future<Item = Http
             }
         }
     }
+    let urls: Vec<String> = json.0.urls;
     Box::new(
         actix_web::web::block(move || {
             let mut reskeys = ResKeys{keys: Vec::with_capacity(files_data.len())};
             for fd in files_data {
                 reskeys.keys.push(process_image(&fd)?);
+            }
+            for link in urls {
+                reskeys.keys.push(process_url(link)?);
             }
             Ok(serde_json::to_string(&reskeys).unwrap())
         })
@@ -275,6 +372,9 @@ fn upload_json(json: actix_web::web::Json<MyJson>) -> Box<dyn Future<Item = Http
                             PIError::UnsupportedFormat(_) => error::ErrorBadRequest(e),
                             PIError::Loading(_) => error::ErrorBadRequest(e),
                             PIError::IO(_) => error::ErrorInternalServerError(e),
+                            PIError::UrlParse(_) => error::ErrorBadRequest(e),
+//                            PIError::BadContentType(_) => error::ErrorBadRequest(e),
+                            PIError::BadRequest(_) => error::ErrorInternalServerError(e)
                         }
                     }
                     error::BlockingError::Canceled => error::ErrorInternalServerError("")
@@ -316,6 +416,8 @@ fn main() -> Result<(), failure::Error> {
                     .to(upload_json)
                 )
             )
+//            .service(resource("/upload_from_link)")
+//                .guard(actix)
     })
     .bind("0.0.0.0:8080")?
     .run()?;

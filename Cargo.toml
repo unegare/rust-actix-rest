@@ -17,20 +17,29 @@ opt-level = 3
 [dependencies]
 actix-web = "^1.0"
 actix-form-data = "^0.4"
-futures = "^0.1"
 actix-multipart = "^0.1"
+actix-utils = "^0.4"
+actix-http = "^0.2"
+actix-rt = "^0.2"
+
+tokio-io = "^0.1"
+
+futures = "^0.1"
+
 mime = "^0.3"
 failure = "^0.1"
+
 serde = "^1.0"
 serde_derive = "^1.0"
 serde_json = "^1.0"
-actix-http = "^0.2"
+
 base64 = "^0.10"
 rand = "^0.7"
 safe-transmute = "^0.11.0-rc.2"
 bs58 = "^0.2"
 http = "^0.1"
 bytes = "^0.4"
-tokio-io = "^0.1"
 
 image = "^0.21"
+
+trust-dns-resolver = "^0.11"
