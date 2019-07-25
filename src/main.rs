@@ -1,21 +1,23 @@
-use std::{path::PathBuf, fs::DirBuilder};
+use std::{path::PathBuf, fs::DirBuilder, net, io::Write};
 
 use actix_multipart::{/*Field,*/ Multipart, MultipartError};
 use actix_web::{
     web::{post, resource, Data, /*Json*/},
-    App, FromRequest, HttpResponse, HttpServer, Result, error, /*middleware, Error*/
+    client::Client, App, FromRequest, HttpResponse, HttpServer, Result, error, /*middleware, Error*/
 };
 
 use form_data::{/*handle_multipart, *//*Field,*/ FilenameGenerator, Form, Error as FormDataError};
 use futures::Future;
-use futures::future::{err, Either};
+use futures::{
+    future::{err, Either},
+    stream::Stream
+};
 use actix_http;
+use actix_utils::stream::IntoStream;
 
 use rand::Rng;
 
 use serde::{Deserialize, Serialize};
-
-use std::io::{/*BufWriter,*/ Write/*, Read*/};
 
 //use tokio_io::AsyncWrite;
 
@@ -23,7 +25,8 @@ use failure::Fail;
 
 use image::{ImageFormat/*, guess_format*/};
 
-use futures::stream::Stream;
+use trust_dns_resolver::{Resolver, config as tdnsrconfig};
+
 
 //#![feature(core_intrinsics)]
 //fn print_type_name<T> (t: T) {
@@ -99,7 +102,11 @@ enum PIError {
     #[fail(display = "Internal Server IO Error")]
     IO(String),
     #[fail(display = "Decoding Image Error")]
-    Loading(String)
+    Loading(String),
+    #[fail(display = "Url Parse Error")]
+    UrlParse(String),
+    #[fail(display = "Unsuitable Content Type Error")]
+    BadContentType(String)
 }
 
 fn process_image (data: &[u8]) -> Result<String,PIError/*std::io::Error*/> {
@@ -174,6 +181,15 @@ fn upload_multipart((mp, _state): (Multipart, Data<Form>)) -> Box<dyn Future<Ite
         mp
             .map_err(error::ErrorBadRequest)
             .map(move |field: actix_multipart::Field| {
+                println!("cd : {:?}", field.content_disposition());
+                let fieldname = match field.content_disposition() {
+                    Some(cd) => match cd.get_name() {
+                        Some(name) => String::from(name),
+                        None => "".to_string()
+                    },
+                    None => "".to_string()
+                };
+                println!("fieldname == {}", fieldname);
                 if false {return Either::A(err(error::ErrorInternalServerError(""))).into_stream()}
                 Either::B(field.fold(Vec::new(), |mut acc: Vec<u8>, b: bytes::Bytes| {
                     acc.append(&mut b.to_vec());
@@ -185,7 +201,96 @@ fn upload_multipart((mp, _state): (Multipart, Data<Form>)) -> Box<dyn Future<Ite
                         })
                 })
                     .map(|v| {
-                        actix_web::web::block(move || process_image(&v))
+                        actix_web::web::block(move || {
+                                if fieldname == "url" || fieldname == "url[]" {
+                                    println!("url : {:?}", v);
+                                    let url = match String::from_utf8(v) {
+                                        Ok(s) => s,
+                                        Err(e) => {
+                                            println!("String::from_utf8::Err");
+                                            return Err(PIError::UrlParse(format!("{:?}", e)))
+                                        }
+                                    };
+                                    actix_rt::System::new("fut").block_on(futures::lazy(|| {
+                                    let mut client = Client::new();
+                                    client.get(&url)
+                                        .send()
+                                        .map_err(|e| {
+                                            println!("client err, {:?}", e);
+                                            error::PayloadError::Overflow
+                                        })
+                                        .and_then(|mut res| {
+                                            println!("Response: {:?}", res);
+                                            res.body()
+                                        })
+                                        .map_err(|e| PIError::BadContentType(e.to_string()))
+                                        .and_then(|body| {
+                                            process_image(&body.to_vec())
+                                        })
+                                    }));
+////                                    actix_rt::System::new("waitfut").block_on
+//                                    futures::lazy(|| {
+//                                        let mut client = Client::new();
+//                                        client.get(url.clone())
+//                                            .send()
+//                                            .map_err(|e| {
+//                                                println!("client map_err");
+////                                                println!("client map_err: {:?}", e);
+////                                                PIError::BadContentType("".to_string())
+////                                                error::PayloadError::Overflow
+//                                                ()
+//                                            })
+////                                            .map(|s| {println!("HERE 1"); s})
+//                                            .and_then(|mut res| {
+//                                                println!("Response: {:?}", res);
+////                                                res.body()
+//                                                Ok(())
+//                                            })
+////                                            .map_err(|_| {
+////                                                println!("client map_err");
+////                                                PIError::BadContentType("".to_string())
+////                                            })
+////                                            .and_then(|body| {
+////                                                println!("body.len() == {:?}", body.to_vec().len());
+////                                                process_image(&body.to_vec())
+//////                                                Ok(())
+////                                            })
+//////                                            .map_err(|e| {
+//////                                                println!("end map_err e : {:?}", e);
+//////                                                e
+//////                                            })
+//                                            })
+//                                            .wait();
+////                                            .map_err(|e| ())
+////                                            .and_then(|body| {
+////                                                println!("Response body: {:?}", body);
+////                                                Ok(())
+////                                            })
+////                                    }).wait();//);
+////                                    let mut client = Client::new();
+////                                    client.get(url)
+////                                        .send()
+////                                        .map_err(|_| ())
+////                                        .and_then(|res| {
+////                                            println!("{:?}", res);
+//////                                            let ct = match res.headers().get("content-type").map(|h| h.to_str()) {
+//////                                                Some(val) => val.to_string(),
+//////                                                None => "".to_string()
+//////                                            };
+//////                                            if ct.len == 0 || ct.len() > 6 && ct[..6] == "image/" || ct == "application/octet-stream" {
+//////                                                return Ok(res.body())
+//////                                            } else {
+//////                                                return Err(PIError::BadContentType(ct))
+//////                                            }
+////                                        });
+//////                                        .and_then(|body| {
+//////                                            println!("body: {:?}", body.to_vec());
+//////                                        }).wait();
+                                    Ok(url)
+                                } else {
+                                    process_image(&v)
+                                }
+                            })
                             .map_err(|e: error::BlockingError<PIError>| {
                                 match e {
                                     error::BlockingError::Error(e) => {
@@ -194,9 +299,11 @@ fn upload_multipart((mp, _state): (Multipart, Data<Form>)) -> Box<dyn Future<Ite
                                             PIError::UnsupportedFormat(_) => error::ErrorBadRequest(e),
                                             PIError::Loading(_) => error::ErrorBadRequest(e),
                                             PIError::IO(_) => error::ErrorInternalServerError(e),
+                                            PIError::UrlParse(_) => error::ErrorBadRequest(e),
+                                            PIError::BadContentType(_) => error::ErrorBadRequest(e)
                                         }
                                     }
-                                    error::BlockingError::Canceled => error::ErrorInternalServerError("")
+                                    error::BlockingError::Canceled => error::ErrorInternalServerError("Canceled")
                                 }
                             })
                     })
@@ -275,6 +382,8 @@ fn upload_json(json: actix_web::web::Json<MyJson>) -> Box<dyn Future<Item = Http
                             PIError::UnsupportedFormat(_) => error::ErrorBadRequest(e),
                             PIError::Loading(_) => error::ErrorBadRequest(e),
                             PIError::IO(_) => error::ErrorInternalServerError(e),
+                            PIError::UrlParse(_) => error::ErrorBadRequest(e),
+                            PIError::BadContentType(_) => error::ErrorBadRequest(e)
                         }
                     }
                     error::BlockingError::Canceled => error::ErrorInternalServerError("")
@@ -316,6 +425,8 @@ fn main() -> Result<(), failure::Error> {
                     .to(upload_json)
                 )
             )
+//            .service(resource("/upload_from_link)")
+//                .guard(actix)
     })
     .bind("0.0.0.0:8080")?
     .run()?;
