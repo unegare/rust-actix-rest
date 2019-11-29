@@ -1,14 +1,16 @@
 use actix_web::{web, client::Client, HttpResponse, error};
-use futures::Future;
+use futures::{Future, stream, stream::Stream, IntoFuture};
 
 use super::types::{PIError, ResKeys, MyJson};
-use super::image_processing::process_image;
+use super::image_processing::process_image_fut;
+
+use failure::Fail;
 
 
 pub fn upload_json(json: web::Json<MyJson>) -> Box<dyn Future<Item = HttpResponse, Error = actix_http::error::Error>> {
 //    println!("upload_json inside");
 //    println!("{:?}", json.0);
-    let mut files_data: Vec<Vec<u8>> = Vec::new();
+    let mut files_data: Vec<Vec<u8>> = Vec::with_capacity(json.0.binarr.len());
     for fd in json.0.binarr {
         match base64::decode(&fd.data) {
             Ok(data) => files_data.push(data),
@@ -19,75 +21,84 @@ pub fn upload_json(json: web::Json<MyJson>) -> Box<dyn Future<Item = HttpRespons
         }
     }
     let urls: Vec<String> = json.0.urls;
-    Box::new(
-        actix_web::web::block(move || {
-            let mut reskeys = ResKeys{keys: Vec::with_capacity(files_data.len())};
-            for fd in files_data {
-                reskeys.keys.push(process_image(&fd)?);
+    let urls_fut = stream::unfold(urls.into_iter(), |mut vals| {
+            match vals.next() {
+                Some(v) => Some(process_url_fut_binarydata(v).map(|v| (v, vals))),
+                None => None,
             }
-            for link in urls {
-                reskeys.keys.push(process_url(link)?);
-            }
-            Ok(serde_json::to_string(&reskeys).unwrap())
         })
-            .map(|s| {
-                let mut res = HttpResponse::with_body(
-                    http::StatusCode::CREATED,
-                    actix_http::body::Body::Bytes(
-                        bytes::Bytes::from(
-                            s.as_bytes()
-                        )
-                    )
-                );
+            .collect()
+            .into_future()
+            .map(|v: Vec<Vec<u8>>| {
+                stream::unfold(v.into_iter(), |mut vals| {
+                    match vals.next() {
+                        Some(v) => Some(process_image_fut(v).map(|v| (v, vals))),
+                        None => None
+                    }
+                })
+                    .collect()
+                    .into_future()
+            })
+            .flatten();
+//            .map(|res: Vec<String>| {
+//               res 
+//            })
+//            .map_err(|e: PIError| e);
+
+    let files_data_fut = stream::unfold(
+            files_data.into_iter(),
+            |mut vals| vals.next().map(|v| process_image_fut(v).map(|v| (v, vals)))
+        )
+            .collect()
+            .into_future();
+    Box::new(
+        files_data_fut.join(urls_fut)
+            .map(|(v1, v2): (Vec<String>, Vec<String>)| {
+                vec![v1, v2].concat()
+            })
+            .map(|s: Vec<String>| {
+                let mut res = HttpResponse::Created().json(ResKeys{ keys: s });
                 res.headers_mut().insert(http::header::CONTENT_TYPE, http::header::HeaderValue::from_str("application/json").unwrap());
                 res
             })
-            .map_err(|e: error::BlockingError<PIError>| {
-                eprintln!("upload_json ended up with a error: {:?}", e);
-                match e {
-                    error::BlockingError::Error(e) => {
-                        match e {
-                            PIError::FormatGuessing(_) => error::ErrorBadRequest(e),
-                            PIError::UnsupportedFormat(_) => error::ErrorBadRequest(e),
-                            PIError::Loading(_) => error::ErrorBadRequest(e),
-                            PIError::IO(_) => error::ErrorInternalServerError(e),
-                            PIError::UrlParse(_) => error::ErrorBadRequest(e),
-//                            PIError::BadContentType(_) => error::ErrorBadRequest(e),
-                            PIError::BadRequest(_) => error::ErrorInternalServerError(e)
-                        }
-                    }
-                    error::BlockingError::Canceled => error::ErrorInternalServerError("")
-                }
+            .map_err(|e: PIError| match e {
+                PIError::IO(s) => error::ErrorInternalServerError(s),
+                y => error::ErrorBadRequest(y.name().unwrap().to_owned()),
             })
     )
 }
 
-fn process_url (url: String) -> Result<String, PIError>{
-    let res = std::thread::spawn(move || { //wrapped in a thread because of a bug in actix .... actix issue #1007
-        actix_rt::System::new("fut").block_on(futures::lazy(|| {
-            let client = Client::new();
-            client.get(url)
-                .send()
-                .map_err(|e| {
-                    eprintln!("client err, {:?}", e);
-                    error::PayloadError::Overflow //just a error
-                })
-                .and_then(|mut res| {
-//                    println!("Response: {:?}", res);
-                    res.body()
-                })
-                .map_err(|e| PIError::BadRequest(e.to_string()))
-                .and_then(|body| {
-                    process_image(&body.to_vec())
-                })
+#[allow(dead_code)]
+fn process_url_fut (url: String) -> impl Future<Item = String, Error = PIError> {
+    let client = Client::new();
+    client.get(url)
+        .send()
+        .map_err(|e| {
+            eprintln!("client err, {:?}", e);
+            error::PayloadError::Overflow //just a error
+        })
+        .and_then(|mut res| {
+            res.body()
+        })
+        .map_err(|e| PIError::BadRequest(e.to_string()))
+        .and_then(|body| {
+            process_image_fut(body.to_vec())
+        })
+}
+
+fn process_url_fut_binarydata (url: String) -> impl Future<Item = Vec<u8>, Error = PIError> {
+    let client = Client::new();
+    Box::new(
+        client.get(url)
+            .send()
+            .map_err(|e| {
+                eprintln!("client err, {:?}", e);
+                error::PayloadError::Overflow //just a error
             })
-        )
-    }).join();
-    match res {
-        Ok(s) => s,
-        Err(e) => {
-            eprintln!("err: {:?}", e);
-            Err(PIError::IO("".to_string()))
-        }
-    }
+            .and_then(|mut res| {
+                res.body()
+            })
+            .map_err(|e| PIError::BadRequest(e.to_string()))
+            .map(|body| body.to_vec())
+    )
 }

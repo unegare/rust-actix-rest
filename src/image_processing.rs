@@ -1,10 +1,23 @@
+use actix_web::{web, error::BlockingError};
 use std::{path::PathBuf, io::Write};
 use image::{ImageFormat/*, guess_format*/};
 use rand::Rng;
 
+use futures::Future;
+
 use super::types::PIError;
 
 use super::config::UPLOADDIR;
+
+pub fn process_image_fut (data: Vec<u8>) -> impl Future<Item = String, Error = PIError> {
+    web::block(move || {
+        process_image(&data)
+    })
+        .map_err(|e: BlockingError<PIError>| match e {
+            BlockingError::Error(e) => e,
+            BlockingError::Canceled => PIError::IO("BlockingError::Cancelled".to_string()),
+        })
+}
 
 pub fn process_image (data: &[u8]) -> Result<String,PIError/*std::io::Error*/> {
     let fmt = match image::guess_format(&data) {

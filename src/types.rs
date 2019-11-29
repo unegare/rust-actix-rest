@@ -16,7 +16,7 @@ pub enum PIError {
     UrlParse(String),
 //    #[fail(display = "Unsuitable Content Type Error")]
 //    BadContentType(String),
-    #[fail(display = "Bad Request ERROR")]
+    #[fail(display = "Bad Request ERROR {}", 0)]
     BadRequest(String)
 }
 
