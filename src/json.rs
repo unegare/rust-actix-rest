@@ -1,8 +1,8 @@
-use actix_web::{web, client::Client, HttpResponse, error};
+use actix_web::{web, HttpResponse, error};
 use futures::{Future, stream, stream::Stream, IntoFuture};
 
 use super::types::{PIError, ResKeys, MyJson};
-use super::image_processing::process_image_fut;
+use super::image_processing::{process_image_fut, process_url_fut_binarydata};
 
 use failure::Fail;
 
@@ -65,40 +65,5 @@ pub fn upload_json(json: web::Json<MyJson>) -> Box<dyn Future<Item = HttpRespons
                 PIError::IO(s) => error::ErrorInternalServerError(s),
                 y => error::ErrorBadRequest(y.name().unwrap().to_owned()),
             })
-    )
-}
-
-#[allow(dead_code)]
-fn process_url_fut (url: String) -> impl Future<Item = String, Error = PIError> {
-    let client = Client::new();
-    client.get(url)
-        .send()
-        .map_err(|e| {
-            eprintln!("client err, {:?}", e);
-            error::PayloadError::Overflow //just a error
-        })
-        .and_then(|mut res| {
-            res.body()
-        })
-        .map_err(|e| PIError::BadRequest(e.to_string()))
-        .and_then(|body| {
-            process_image_fut(body.to_vec())
-        })
-}
-
-fn process_url_fut_binarydata (url: String) -> impl Future<Item = Vec<u8>, Error = PIError> {
-    let client = Client::new();
-    Box::new(
-        client.get(url)
-            .send()
-            .map_err(|e| {
-                eprintln!("client err, {:?}", e);
-                error::PayloadError::Overflow //just a error
-            })
-            .and_then(|mut res| {
-                res.body()
-            })
-            .map_err(|e| PIError::BadRequest(e.to_string()))
-            .map(|body| body.to_vec())
     )
 }

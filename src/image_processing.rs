@@ -1,4 +1,4 @@
-use actix_web::{web, error::BlockingError};
+use actix_web::{web, error::BlockingError, client::Client, error};
 use std::{path::PathBuf, io::Write};
 use image::{ImageFormat/*, guess_format*/};
 use rand::Rng;
@@ -93,4 +93,39 @@ fn get_random_name() -> PathBuf {
     p.push(UPLOADDIR);
     p.push(name);
     p
+}
+
+#[allow(dead_code)]
+pub fn process_url_fut (url: String) -> impl Future<Item = String, Error = PIError> {
+    let client = Client::new();
+    client.get(url)
+        .send()
+        .map_err(|e| {
+            eprintln!("client err, {:?}", e);
+            error::PayloadError::Overflow //just a error
+        })
+        .and_then(|mut res| {
+            res.body()
+        })
+        .map_err(|e| PIError::BadRequest(e.to_string()))
+        .and_then(|body| {
+            process_image_fut(body.to_vec())
+        })
+}
+
+pub fn process_url_fut_binarydata (url: String) -> impl Future<Item = Vec<u8>, Error = PIError> {
+    let client = Client::new();
+    Box::new(
+        client.get(url)
+            .send()
+            .map_err(|e| {
+                eprintln!("client err, {:?}", e);
+                error::PayloadError::Overflow //just a error
+            })
+            .and_then(|mut res| {
+                res.body()
+            })
+            .map_err(|e| PIError::BadRequest(e.to_string()))
+            .map(|body| body.to_vec())
+    )
 }
