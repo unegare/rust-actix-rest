@@ -15,7 +15,7 @@ pub fn upload_json(json: web::Json<MyJson>) -> Box<dyn Future<Item = HttpRespons
         match base64::decode(&fd.data) {
             Ok(data) => files_data.push(data),
             Err(e) => {
-                eprintln!("upload_json: base64::decode : {:?}", e);
+                error!("upload_json: base64::decode : {:?}", e);
                 return Box::new(futures::lazy(|| HttpResponse::BadRequest().finish()));
             }
         }

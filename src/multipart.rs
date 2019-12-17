@@ -57,7 +57,7 @@ pub fn upload_multipart((mp, _state): (Multipart, Data<Form>)) -> impl Future<It
             HttpResponse::Created().json(ResKeys{keys: v})
         })
         .map_err(|e| {
-            eprintln!("upload_multipart ended up with an error: {:?}", e);
+            error!("upload_multipart ended up with an error: {:?}", e);
             e
         })
 }
