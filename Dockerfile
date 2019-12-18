@@ -16,7 +16,7 @@ RUN curl https://sh.rustup.rs -sSf | bash -s -- -y
 
 WORKDIR /usr/src/app
 
-COPY ./Cargo.toml ./
+COPY ./Cargo.toml ./Cargo.lock ./
 
 RUN mkdir src && echo "fn main() {}" > ./src/main.rs
 
@@ -26,7 +26,7 @@ RUN rm ./target/release/deps/actix_003* && rm ./target/release/actix_003
 
 COPY --from=rsync /app ./rsync
 
-RUN sh -c 'rm -f ./rsync/Cargo.{toml,lock} && rm -rf ./src && mv ./rsync/* ./ && rm -rf ./rsync'
+RUN bash -c 'rm ./rsync/Cargo.{toml,lock} && rm -rf ./src && mv ./rsync/* ./ && rm -rf ./rsync'
 
 RUN bash -c 'source $HOME/.cargo/env && cargo build --release'
 
