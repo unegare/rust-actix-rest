@@ -23,7 +23,7 @@ pub fn process_image (data: &[u8]) -> Result<String,PIError/*std::io::Error*/> {
     let fmt = match image::guess_format(&data) {
         Ok(fmt) => fmt,
         Err(e) => {
-            eprintln!("process_image: {:?}", e);
+            error!("process_image: {:?}", e);
             return Err(PIError::FormatGuessing(format!("{:?}", e)));
         }
     };
@@ -40,7 +40,7 @@ pub fn process_image (data: &[u8]) -> Result<String,PIError/*std::io::Error*/> {
         ImageFormat::HDR => "hdr",
 
         _ => {
-            eprintln!("process_image: match fmt: unsupported format");
+            error!("process_image: match fmt: unsupported format");
             return Err(PIError::UnsupportedFormat(format!("{:?}", fmt)));
         }
     };
@@ -52,7 +52,7 @@ pub fn process_image (data: &[u8]) -> Result<String,PIError/*std::io::Error*/> {
             match img.thumbnail_exact(100,100).save(&pbthumb) {
                 Ok(_) => {},
                 Err(e) => {
-                    eprintln!("process_image: thumbnail_exact.save : {:?}", e);
+                    error!("process_image: thumbnail_exact.save : {:?}", e);
                     return Err(PIError::IO(format!("{:?}", e)));
                 }
             };
@@ -60,20 +60,20 @@ pub fn process_image (data: &[u8]) -> Result<String,PIError/*std::io::Error*/> {
             let mut fimg = match std::fs::File::create(&pb) {
                 Ok(f) => f,
                 Err(e) => {
-                    eprintln!("process_image: fimg create : {:?}", e);
+                    error!("process_image: fimg create : {:?}", e);
                     return Err(PIError::IO(format!("{:?}", e)));
                 }
             };
             match fimg.write_all(&data) {
                 Ok(_) => {},
                 Err(e) => {
-                    eprintln!("process_image: fimg.write_all : {:?}", e);
+                    error!("process_image: fimg.write_all : {:?}", e);
                     return Err(PIError::IO(format!("{:?}", e)));
                 }
             };
         },
         Err(e) => {
-            eprintln!("process_image: image::load_from_memory : {:?}", e);
+            error!("process_image: image::load_from_memory : {:?}", e);
             return Err(PIError::Loading(format!("{:?}", e)));
         }
     }
@@ -101,7 +101,7 @@ pub fn process_url_fut (url: String) -> impl Future<Item = String, Error = PIErr
     client.get(url)
         .send()
         .map_err(|e| {
-            eprintln!("client err, {:?}", e);
+            error!("client err, {:?}", e);
             error::PayloadError::Overflow //just a error
         })
         .and_then(|mut res| {
@@ -119,7 +119,7 @@ pub fn process_url_fut_binarydata (url: String) -> impl Future<Item = Vec<u8>, E
         client.get(url)
             .send()
             .map_err(|e| {
-                eprintln!("client err, {:?}", e);
+                error!("client err, {:?}", e);
                 error::PayloadError::Overflow //just a error
             })
             .and_then(|mut res| {
