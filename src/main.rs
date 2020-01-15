@@ -5,7 +5,7 @@ use std::{path::PathBuf, fs::DirBuilder};
 
 use actix_web::{
     web::{post, resource},
-    App, FromRequest, HttpServer, Result 
+    App, FromRequest, HttpServer 
 };
 
 use actix_rt::System;
