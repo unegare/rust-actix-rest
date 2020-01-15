@@ -1,17 +1,17 @@
 use futures::Future;
-use actix_web::{web::Data, HttpResponse, error};
+use actix_web::{/*web::Data,*/ HttpResponse, error};
 use actix_multipart::{/*Field,*/ Multipart, MultipartError};
 use futures::{
     future::Either,
     stream::Stream
 };
-use form_data::Form;
+//use form_data::Form;
 
 use super::types::{PIError, ResKeys};
 use super::image_processing::{process_image_fut, process_url_fut};
 
-
-pub fn upload_multipart((mp, _state): (Multipart, Data<Form>)) -> impl Future<Item = HttpResponse, Error = actix_http::error::Error> {
+#[allow(unused_parens)]
+pub fn upload_multipart((mp/*, _state*/): (Multipart/*, Data<Form>*/)) -> impl Future<Item = HttpResponse, Error = actix_http::error::Error> {
     mp
         .map_err(error::ErrorBadRequest)
         .map(move |field: actix_multipart::Field| {
